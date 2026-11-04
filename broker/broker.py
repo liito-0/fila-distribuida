@@ -1,16 +1,43 @@
 import asyncio
+from contextlib import suppress
 import logging
+import time
 import uuid
 from collections import deque
 
 from common.protocol import HOST, PORT, decode, encode
 
+TASK_TIMEOUT_SECONDS = 30
+TIMEOUT_CHECK_INTERVAL_SECONDS = 5
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [BROKER] %(message)s")
 log = logging.getLogger(__name__)
 
 pending = deque()   # tarefas aguardando
-in_progress = {}    # task_id -> {"task": ..., "worker": ...}
+in_progress = {}    # task_id -> {"task": ..., "worker": ..., "started_at": ...}
 done = {}           # task_id -> resultado
+
+
+def _requeue_expired_tasks(now: float | None = None) -> None:
+    if now is None:
+        now = time.monotonic()
+
+    expired_tasks = []
+    for task_id, info in list(in_progress.items()):
+        if now - info["started_at"] > TASK_TIMEOUT_SECONDS:
+            in_progress.pop(task_id)
+            expired_tasks.append((task_id, info["task"]))
+            log.warning(
+                "Tarefa %s expirou sem ACK/FAIL; retornando ao início da fila",
+                task_id,
+            )
+    pending.extendleft(task for _, task in reversed(expired_tasks))
+
+
+async def _monitor_timeouts() -> None:
+    while True:
+        await asyncio.sleep(TIMEOUT_CHECK_INTERVAL_SECONDS)
+        _requeue_expired_tasks()
 
 
 def handle_message(msg: dict) -> dict:
@@ -27,7 +54,11 @@ def handle_message(msg: dict) -> dict:
         if not pending:
             return {"type": "NO_TASK"}
         task = pending.popleft()
-        in_progress[task["id"]] = {"task": task, "worker": msg.get("worker_id")}
+        in_progress[task["id"]] = {
+            "task": task,
+            "worker": msg.get("worker_id"),
+            "started_at": time.monotonic(),
+        }
         log.info("Tarefa %s -> worker %s", task["id"], msg.get("worker_id"))
         return {"type": "TASK", "task": task}
 
@@ -67,7 +98,13 @@ async def main():
     server = await asyncio.start_server(handle_client, HOST, PORT)
     log.info("Escutando em %s:%s", HOST, PORT)
     async with server:
-        await server.serve_forever()
+        timeout_monitor = asyncio.create_task(_monitor_timeouts())
+        try:
+            await server.serve_forever()
+        finally:
+            timeout_monitor.cancel()
+            with suppress(asyncio.CancelledError):
+                await timeout_monitor
 
 
 if __name__ == "__main__":
