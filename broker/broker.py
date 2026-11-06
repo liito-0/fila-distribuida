@@ -44,7 +44,9 @@ def handle_message(msg: dict) -> dict:
     kind = msg.get("type")
 
     if kind == "SUBMIT":
-        task = msg["task"]
+        task = msg.get("task")
+        if not isinstance(task, dict):
+            return {"type": "ERROR", "error": "task inválida"}
         task.setdefault("id", str(uuid.uuid4()))
         pending.append(task)
         log.info("Tarefa recebida: %s", task["id"])
@@ -85,7 +87,7 @@ async def handle_client(reader, writer):
         while line := await reader.readline():
             try:
                 reply = handle_message(decode(line))
-            except (ValueError, KeyError) as e:
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
                 reply = {"type": "ERROR", "error": str(e)}
             writer.write(encode(reply))
             await writer.drain()
