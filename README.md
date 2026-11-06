@@ -17,11 +17,11 @@ A arquitetura é composta por três componentes principais:
 
 - **`Broker`:** recebe as tarefas, mantém a fila de pendências e gerencia sua distribuição e seus estados.
 - **`Worker`:** solicita tarefas ao Broker, executa seu processamento e comunica o resultado por meio de confirmações.
-- **`Producer`:** componente planejado para submeter novas tarefas ao Broker..
+- **`Producer`:** submete novas tarefas ao Broker para processamento pelos Workers.
 
 ## 2. Arquitetura do sistema
 
-A comunicação entre os componentes implementados ocorre por meio de conexões TCP, utilizando mensagens no formato JSON, conforme o protocolo compartilhado definido em `common/protocol.py`. O protocolo também será utilizado pelo Producer quando esse componente for desenvolvido.
+A comunicação entre os componentes ocorre por meio de conexões TCP, utilizando mensagens no formato JSON, conforme o protocolo compartilhado definido em `common/protocol.py`.
 
 O Broker mantém três estruturas principais para o gerenciamento das tarefas: pendentes, em processamento e concluídas. Os Workers consomem as tarefas disponíveis e enviam mensagens de confirmação (`ACK`) ou falha (`FAIL`).
 
@@ -84,6 +84,26 @@ python -m worker.worker --id worker-1
 ```
 
 É possível executar múltiplas instâncias de Workers, utilizando identificadores diferentes.
+
+### Envio de tarefas com o Producer
+
+Em outro terminal, envie um payload simples:
+
+```bash
+python -m producer.producer --id producer-1 --payload "ola"
+```
+
+Envie três tarefas de texto em intervalos de um segundo:
+
+```bash
+python -m producer.producer --action uppercase --text "ola mundo" --count 3 --interval 1
+```
+
+Some uma lista de inteiros:
+
+```bash
+python -m producer.producer --action sum --numbers 1 2 3
+```
 
 ### Testes manuais
 
