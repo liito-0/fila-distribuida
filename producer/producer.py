@@ -5,6 +5,7 @@ import asyncio
 import logging
 from pathlib import Path
 import sys
+import time
 import uuid
 from typing import Any
 
@@ -18,6 +19,8 @@ from common.protocol import (  # noqa: E402
     HOST,
     OK,
     PORT,
+    RESULT,
+    STATUS,
     SUBMIT,
     build_submit,
     decode,
@@ -113,6 +116,67 @@ class Producer:
             writer.close()
             await writer.wait_closed()
 
+    async def _send_request(self, message: dict) -> dict:
+        """Envia uma consulta ao Broker e devolve a resposta."""
+        reader, writer = await self._connect()
+        try:
+            writer.write(encode(message))
+            await writer.drain()
+            line = await reader.readline()
+            if not line:
+                raise ProducerError("Conexão fechada pelo Broker.")
+
+            response = decode(line)
+            if response.get("type") == ERROR:
+                raise ProducerError(response.get("error", "Erro retornado pelo Broker."))
+            return response
+        except (OSError, asyncio.IncompleteReadError) as error:
+            raise ProducerError(f"Falha na comunicação com o Broker: {error}") from error
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def status(self) -> dict:
+        """Consulta as quantidades de tarefas em cada estado no Broker."""
+        response = await self._send_request({"type": STATUS})
+        if response.get("type") != STATUS:
+            raise ProducerError(f"Resposta inesperada do Broker: {response}")
+        return response
+
+    async def get_result(self, task_id: str) -> dict:
+        """Consulta o estado e, quando disponível, o resultado de uma tarefa."""
+        response = await self._send_request({"type": RESULT, "task_id": task_id})
+        if response.get("type") != RESULT or response.get("task_id") != task_id:
+            raise ProducerError(f"Resposta inesperada do Broker: {response}")
+        return response
+
+    async def wait_result(
+        self, task_id: str, timeout: float = 30, poll: float = 0.5
+    ) -> Any:
+        """Aguarda o resultado final da tarefa ou lança ProducerError no timeout/falha."""
+        if timeout < 0:
+            raise ValueError("timeout não pode ser negativo")
+        if poll <= 0:
+            raise ValueError("poll deve ser maior que zero")
+
+        deadline = time.monotonic() + timeout
+        while True:
+            response = await self.get_result(task_id)
+            state = response["state"]
+            if state == "done":
+                return response["result"]
+            if state == "failed":
+                raise ProducerError(
+                    f"Tarefa {task_id} falhou: {response.get('result')}"
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProducerError(
+                    f"Tempo esgotado aguardando resultado da tarefa {task_id}."
+                )
+            await asyncio.sleep(min(poll, remaining))
+
 
 def _build_payload(args: argparse.Namespace) -> Any:
     """Converte as opções da linha de comando no payload da tarefa."""
@@ -134,11 +198,21 @@ async def _run_cli(args: argparse.Namespace) -> None:
         port=args.port,
     )
     payload = _build_payload(args)
+    task_ids = []
     for index in range(args.count):
         task_id = await producer.submit(payload)
+        task_ids.append(task_id)
         producer.logger.info("Tarefa enviada: %s", task_id)
         if index + 1 < args.count:
             await asyncio.sleep(args.interval)
+
+    if args.wait:
+        for task_id in task_ids:
+            try:
+                result = await producer.wait_result(task_id)
+                print(f"Resultado da tarefa {task_id}: {result}")
+            except ProducerError as error:
+                print(f"Falha na tarefa {task_id}: {error}")
 
 
 def main() -> None:
@@ -153,6 +227,7 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=0.5, help="Duração simulada da tarefa (s)")
     parser.add_argument("--count", type=int, default=1, help="Quantidade de tarefas a enviar")
     parser.add_argument("--interval", type=float, default=0, help="Intervalo entre envios (s)")
+    parser.add_argument("--wait", action="store_true", help="Aguardar e imprimir os resultados")
     parser.add_argument("--debug", action="store_true", help="Habilitar logs de debug")
     args = parser.parse_args()
     if args.count < 1:

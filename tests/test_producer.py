@@ -13,10 +13,14 @@ def clear_broker_state():
     broker.pending.clear()
     broker.in_progress.clear()
     broker.done.clear()
+    broker.failed.clear()
+    broker.attempts.clear()
     yield
     broker.pending.clear()
     broker.in_progress.clear()
     broker.done.clear()
+    broker.failed.clear()
+    broker.attempts.clear()
 
 
 def test_build_submit_with_and_without_task_id():
@@ -99,6 +103,76 @@ def test_submit_raises_producer_error_when_broker_is_unavailable():
         producer = Producer(host=HOST, port=0, max_retries=1, reconnect_interval=0.01)
         with pytest.raises(ProducerError):
             await producer.submit("offline")
+
+    asyncio.run(_test())
+
+
+def test_status_and_result_report_every_task_state():
+    async def _test():
+        server = await asyncio.start_server(broker.handle_client, HOST, 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            producer = Producer(host=HOST, port=port)
+            await producer.submit("pendente", task_id="pending-task")
+            broker.handle_message(
+                {"type": "REQUEST_TASK", "worker_id": "worker-1"}
+            )
+            broker.done["done-task"] = {"output": "ok"}
+            broker.failed["failed-task"] = "erro"
+
+            assert await producer.status() == {
+                "type": "STATUS",
+                "pending": 0,
+                "in_progress": 1,
+                "done": 1,
+                "failed": 1,
+            }
+            assert (await producer.get_result("pending-task"))["state"] == "in_progress"
+            assert (await producer.get_result("done-task")) == {
+                "type": "RESULT",
+                "task_id": "done-task",
+                "state": "done",
+                "result": {"output": "ok"},
+            }
+            assert (await producer.get_result("failed-task"))["result"] == "erro"
+            assert (await producer.get_result("missing"))["state"] == "unknown"
+
+            broker.in_progress.clear()
+            broker.pending.append({"id": "queued-task", "payload": "queued"})
+            assert (await producer.get_result("queued-task"))["state"] == "pending"
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(_test())
+
+
+def test_wait_result_returns_completed_result():
+    async def _test():
+        server = await asyncio.start_server(broker.handle_client, HOST, 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            broker.done["task-1"] = "resultado pronto"
+            producer = Producer(host=HOST, port=port)
+            assert await producer.wait_result("task-1", timeout=0.1) == "resultado pronto"
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(_test())
+
+
+def test_wait_result_raises_on_timeout():
+    async def _test():
+        server = await asyncio.start_server(broker.handle_client, HOST, 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            producer = Producer(host=HOST, port=port)
+            with pytest.raises(ProducerError, match="Tempo esgotado"):
+                await producer.wait_result("unknown", timeout=0.02, poll=0.005)
+        finally:
+            server.close()
+            await server.wait_closed()
 
     asyncio.run(_test())
 
