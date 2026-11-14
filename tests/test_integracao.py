@@ -219,8 +219,6 @@ def test_integracao_prioridade_timeout_extendleft(monkeypatch):
             writer.write(encode({"type": "REQUEST_TASK", "worker_id": "fantasma"}))
             await writer.drain()
             await reader.readline()
-            writer.close()
-            await writer.wait_closed()
             
             task_id_2 = await producer.submit("normal")
             
@@ -234,6 +232,8 @@ def test_integracao_prioridade_timeout_extendleft(monkeypatch):
             
             chaves_concluidas = list(broker.done.keys())
             assert chaves_concluidas == [task_id_1, task_id_2]
+            writer.close()
+            await writer.wait_closed()
         finally:
             server.close()
             await server.wait_closed()
