@@ -69,7 +69,7 @@ class Worker:
         result: Any,
     ) -> dict:
         """Confirma a conclusão com sucesso de uma tarefa (ACK)."""
-        msg = {"type": "ACK", "task_id": task_id, "result": result}
+        msg = {"type": "ACK", "task_id": task_id,"worker_id": self.worker_id, "result": result}
         return await self._send_and_receive(reader, writer, msg)
 
     async def send_fail(
@@ -80,7 +80,7 @@ class Worker:
         error: str,
     ) -> dict:
         """Notifica o Broker sobre falha no processamento da tarefa (FAIL)."""
-        msg = {"type": "FAIL", "task_id": task_id, "error": error}
+        msg = {"type": "FAIL", "task_id": task_id, "worker_id": self.worker_id, "error": error}
         return await self._send_and_receive(reader, writer, msg)
 
     async def execute_task(self, task: dict) -> Any:
