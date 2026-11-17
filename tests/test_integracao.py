@@ -290,7 +290,7 @@ def test_integracao_broker_nao_cai_com_lixo_na_rede():
             
             # 3. Prova que o broker continua funcionando apos os ataques enviando uma tarefa normal
             producer = Producer(host=HOST, port=port)
-            task_id = await producer.submit("to vivo")
+            await producer.submit("to vivo")
             assert len(broker.pending) == 1
         finally:
             server.close()

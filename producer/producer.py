@@ -21,7 +21,6 @@ from common.protocol import (  # noqa: E402
     PORT,
     RESULT,
     STATUS,
-    SUBMIT,
     build_submit,
     decode,
     encode,

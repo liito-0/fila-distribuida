@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from broker import broker
-from common.protocol import HOST, PORT, build_submit, decode, encode
+from common.protocol import HOST, build_submit, decode, encode
 from producer.producer import Producer, ProducerError
 from worker.worker import Worker
 
