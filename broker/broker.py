@@ -6,6 +6,7 @@ import uuid
 from collections import deque
 
 from common.protocol import HOST, PORT, decode, encode
+from worker import worker
 
 TASK_TIMEOUT_SECONDS = 30
 TIMEOUT_CHECK_INTERVAL_SECONDS = 5
@@ -48,6 +49,9 @@ def handle_message(msg: dict) -> dict:
         if not isinstance(task, dict):
             return {"type": "ERROR", "error": "task inválida"}
         task.setdefault("id", str(uuid.uuid4()))
+        task_id = task["id"]
+        if (task_id in in_progress or task_id in done or any(t.get("id") == task_id for t in pending)): #verificando se o task_id ja esta em algum lugar 
+            return {"type": "ERROR", "error":f"task_id duplicado: {task_id}"}
         pending.append(task)
         log.info("Tarefa recebida: %s", task["id"])
         return {"type": "OK", "task_id": task["id"]}
@@ -65,12 +69,24 @@ def handle_message(msg: dict) -> dict:
         return {"type": "TASK", "task": task}
 
     if kind == "ACK":
+        task_id = msg["task_id"]
+        info = in_progress.get(task_id)
+        worker_id = msg.get("worker_id")
+        if info is None or (worker_id is not None and info.get("worker") != worker_id):
+            return {"type": "ERROR", "error": "tarefa inválida ou atribuída a outro worker"}
+
         in_progress.pop(msg["task_id"], None)
         done[msg["task_id"]] = msg.get("result")
         log.info("Tarefa %s concluída", msg["task_id"])
         return {"type": "OK"}
 
     if kind == "FAIL":
+
+        task_id = msg["task_id"]
+        info = in_progress.get(task_id)
+        worker_id = msg.get("worker_id")
+        if info is None or (worker_id is not None and info.get("worker") != worker_id):
+            return {"type": "ERROR", "error": "tarefa inválida ou atribuída a outro worker"}
         info = in_progress.pop(msg["task_id"], None)
         if info:
             pending.append(info["task"])  # devolve à fila
