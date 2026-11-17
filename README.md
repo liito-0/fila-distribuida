@@ -145,5 +145,5 @@ O script inicia um Broker e dois Workers como subprocessos usando o Python ativo
 
 ```bash
 python -m scripts.teste_manual
-python -m pytest -v
+python -m pytest tests/ -q
 ```

@@ -5,12 +5,7 @@ import time
 import uuid
 from collections import deque
 
-<<<<<<< HEAD
-from common.protocol import HOST, PORT, decode, encode
-from worker import worker
-=======
 from common.protocol import HOST, PORT, RESULT, STATUS, decode, encode
->>>>>>> origin/main
 
 TASK_TIMEOUT_SECONDS = 30
 TIMEOUT_CHECK_INTERVAL_SECONDS = 5
@@ -110,32 +105,16 @@ def handle_message(msg: dict) -> dict:
 
     if kind == "ACK":
         task_id = msg["task_id"]
-<<<<<<< HEAD
         info = in_progress.get(task_id)
         worker_id = msg.get("worker_id")
-        if info is None or (worker_id is not None and info.get("worker") != worker_id):
-            return {"type": "ERROR", "error": "tarefa inválida ou atribuída a outro worker"}
-
-        in_progress.pop(msg["task_id"], None)
-        done[msg["task_id"]] = msg.get("result")
-        log.info("Tarefa %s concluída", msg["task_id"])
-        return {"type": "OK"}
-
-    if kind == "FAIL":
-
-        task_id = msg["task_id"]
-        info = in_progress.get(task_id)
-        worker_id = msg.get("worker_id")
-        if info is None or (worker_id is not None and info.get("worker") != worker_id):
-            return {"type": "ERROR", "error": "tarefa inválida ou atribuída a outro worker"}
-        info = in_progress.pop(msg["task_id"], None)
-        if info:
-            pending.append(info["task"])  # devolve à fila
-        log.warning("Tarefa %s falhou: %s", msg["task_id"], msg.get("error"))
-=======
-        if task_id not in in_progress:
+        if info is None:
+            if worker_id is not None:
+                return {"type": "ERROR", "error": "tarefa inválida ou já finalizada"}
             log.warning("ACK ignorado para tarefa %s fora de in_progress", task_id)
             return {"type": "OK"}
+        if worker_id is not None and info.get("worker") != worker_id:
+            return {"type": "ERROR", "error": "tarefa atribuída a outro worker"}
+
         in_progress.pop(task_id)
         done[task_id] = msg.get("result")
         log.info("Tarefa %s concluída", task_id)
@@ -144,9 +123,14 @@ def handle_message(msg: dict) -> dict:
     if kind == "FAIL":
         task_id = msg["task_id"]
         info = in_progress.get(task_id)
+        worker_id = msg.get("worker_id")
         if info is None:
+            if worker_id is not None:
+                return {"type": "ERROR", "error": "tarefa inválida ou já finalizada"}
             log.warning("FAIL ignorado para tarefa %s fora de in_progress", task_id)
             return {"type": "OK"}
+        if worker_id is not None and info.get("worker") != worker_id:
+            return {"type": "ERROR", "error": "tarefa atribuída a outro worker"}
 
         in_progress.pop(task_id)
         error = msg.get("error")
@@ -160,7 +144,6 @@ def handle_message(msg: dict) -> dict:
         else:
             pending.append(info["task"])
         log.warning("Tarefa %s falhou: %s", task_id, error)
->>>>>>> origin/main
         return {"type": "OK"}
 
     if kind == STATUS:
