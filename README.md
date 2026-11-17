@@ -9,6 +9,8 @@ O grupo é composto por:
 * Miguel Monteiro
 * Pedro Henrique
 
+Divisão de tarefas e responsabilidades: veja [AUTORES.md](AUTORES.md).
+
 ## 1. Visão geral
 
 O sistema separa a submissão de tarefas de sua execução. O Producer envia tarefas, o Broker distribui e acompanha seu estado, e um ou mais Workers processam as tarefas e enviam o resultado.
@@ -49,7 +51,7 @@ fila-distribuida/
 | `STATUS` | Broker → Producer | `pending`, `in_progress`, `done` e `failed` com suas quantidades |
 | `RESULT` | Broker → Producer | `task_id`, estado (`pending`, `in_progress`, `done`, `failed` ou `unknown`) e `result` quando concluída ou falha |
 
-As respostas para `STATUS` e `RESULT` usam seus próprios nomes como `type`. Tarefas fora de `in_progress` que recebem ACK/FAIL são ignoradas.
+As respostas para `STATUS` e `RESULT` usam seus próprios nomes como `type`. ACK/FAIL para uma tarefa fora de `in_progress` é ignorado (resposta `OK`) quando a mensagem não traz `worker_id`; se traz `worker_id`, o Broker responde `ERROR`. ACK/FAIL de um worker diferente do que recebeu a tarefa também recebe `ERROR`.
 
 ## 4. Estados e tolerância a falhas
 
