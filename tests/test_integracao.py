@@ -555,10 +555,10 @@ def test_integracao_fail_atrasado_apos_conclusao_por_outro_worker():
             assert task_id in broker.done
 
             # Worker lento acorda tarde e envia FAIL para a tarefa ja concluida
-            w_lento.write(encode({"type": "FAIL", "task_id": task_id, "error": "falha tardia"}))
+            w_lento.write(encode({"type": "FAIL", "task_id": task_id,"worker_id": "worker_lento", "error": "falha tardia"}))
             await w_lento.drain()
             resp_fail = decode(await r_lento.readline())
-            assert resp_fail["type"] == "OK"
+            assert resp_fail["type"] == "ERROR"
 
             # Verificando se o broker ignorou o FAIL tardio e manteve a tarefa concluida
             assert len(broker.pending) == 0
@@ -601,7 +601,7 @@ def test_integracao_fail_tardio_durante_execucao_de_outro_worker():
             assert broker.in_progress[task_id]["worker"] == "worker-rapido"
 
             # Worker lento acorda antes do rapido terminar e envia FAIL
-            w_lento.write(encode({"type": "FAIL", "task_id": task_id, "error": "falha tardia"}))
+            w_lento.write(encode({"type": "FAIL", "task_id": task_id,"worker_id": "worker-lento", "error": "falha tardia"}))
             await w_lento.drain()
             await r_lento.readline()
 
