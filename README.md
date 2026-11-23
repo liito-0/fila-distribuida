@@ -1,151 +1,176 @@
-# Fila Distribuída de Tarefas
+﻿# Fila Distribuída de Tarefas
 
-Projeto acadêmico desenvolvido para a disciplina de **Sistemas Distribuídos**, com o objetivo de implementar um sistema de gerenciamento e processamento distribuído de tarefas por meio de uma fila.
+Sistema acadêmico desenvolvido para a disciplina de **Sistemas Distribuídos**. Ele separa a submissão, a distribuição e a execução de tarefas usando uma arquitetura assíncrona baseada em TCP.
 
-O grupo é composto por:
-* David Melo
-* Evelin Dionísio
-* Heitor Carvalho
-* Miguel Monteiro
-* Pedro Henrique
+O grupo é formado por David Melo, Evelin Dionísio, Heitor Carvalho, Miguel Monteiro e Pedro Henrique. Veja as responsabilidades em [AUTORES.md](AUTORES.md).
 
-Divisão de tarefas e responsabilidades: veja [AUTORES.md](AUTORES.md).
+## Objetivo
 
-## 1. Visão geral
+Permitir que Producers submetam tarefas a um Broker, que as organiza em uma fila e as entrega a Workers disponíveis. Os Workers executam o payload, confirmam o sucesso com `ACK` ou reportam uma falha com `FAIL`; o Producer pode consultar o estado e aguardar o resultado.
 
-O sistema separa a submissão de tarefas de sua execução. O Producer envia tarefas, o Broker distribui e acompanha seu estado, e um ou mais Workers processam as tarefas e enviam o resultado.
+A implementação funciona em uma ou mais máquinas da rede local. Neste repositório, os componentes usam `127.0.0.1:5000` por padrão.
 
-Os componentes comunicam-se por TCP, com mensagens JSON delimitadas por linha. O protocolo compartilhado está definido em `common/protocol.py`.
+## Arquitetura
+
+```text
+Producer ──SUBMIT/STATUS/RESULT──> Broker <──REQUEST_TASK/ACK/FAIL── Worker
+                                      |
+                                      └── fila e estados em memória
+```
+
+- **Broker**: recebe conexões TCP assíncronas, mantém a fila e controla o ciclo de vida das tarefas.
+- **Producer**: envia tarefas e consulta estado ou resultado. Também pode aguardar até que uma tarefa termine ou falhe.
+- **Worker**: solicita tarefas periodicamente, executa o payload e devolve `ACK` ou `FAIL`.
+- **Protocolo comum**: usa JSON em UTF-8, com uma mensagem por linha (`\n`), em `common/protocol.py`.
 
 **Diagramas existentes:** [componentes](docs/diagrama_componentes.png) · [comunicação](docs/diagrama_comunicacao.png).
 
-## 2. Organização do repositório
+## Estrutura das camadas
 
 ```text
 fila-distribuida/
-├── broker/       # Recebe mensagens, distribui tarefas e gerencia estados
-├── common/       # Constantes e serialização do protocolo compartilhado
-├── docs/         # Documentação e diagramas
-├── producer/     # Cliente e CLI para envio e consulta de tarefas
-├── scripts/      # Demonstração e testes manuais
-├── tests/        # Testes automatizados
-├── worker/       # Consumo e processamento de tarefas
+├── common/       # Protocolo, host, porta e codificação JSON
+├── broker/       # Fila, distribuição, estados, timeout e reentrega
+├── worker/       # Execução das tarefas e reconexão ao Broker
+├── producer/     # Cliente assíncrono e interface de linha de comando
+├── scripts/      # Demonstração completa e teste manual
+├── tests/        # Testes unitários e de integração com pytest
+├── docs/         # Diagramas da arquitetura
 ├── requirements.txt
 └── README.md
 ```
 
-## 3. Protocolo de mensagens
+## Estados de falha
 
-| Tipo | Direção | Campos principais / finalidade |
-|---|---|---|
-| `SUBMIT` | Producer → Broker | `task` com `payload` e opcionalmente `id`; submete tarefa |
-| `REQUEST_TASK` | Worker → Broker | `worker_id`; solicita tarefa |
-| `ACK` | Worker → Broker | `task_id`, `result`; confirma conclusão |
-| `FAIL` | Worker → Broker | `task_id`, `error`; informa falha de execução |
-| `STATUS` | Producer → Broker | Consulta contagem de tarefas por estado |
-| `RESULT` | Producer → Broker | `task_id`; consulta estado e resultado/erro quando disponível |
-| `OK` | Broker → Producer/Worker | Confirma uma mensagem ou submissão (a submissão também inclui `task_id`) |
-| `TASK` | Broker → Worker | Inclui a tarefa entregue |
-| `NO_TASK` | Broker → Worker | Não há tarefa pendente no momento |
-| `ERROR` | Broker → Producer/Worker | Inclui a descrição do erro |
-| `STATUS` | Broker → Producer | `pending`, `in_progress`, `done` e `failed` com suas quantidades |
-| `RESULT` | Broker → Producer | `task_id`, estado (`pending`, `in_progress`, `done`, `failed` ou `unknown`) e `result` quando concluída ou falha |
+- `pending`: aguardando atribuição.
+- `in_progress`: reservada para um Worker.
+- `done`: concluída; contém o resultado enviado pelo `ACK`.
+- `failed`: entrou em falha definitiva após esgotar as tentativas.
+- `unknown`: ID inexistente ou não conhecido pelo Broker.
 
-As respostas para `STATUS` e `RESULT` usam seus próprios nomes como `type`. ACK/FAIL para uma tarefa fora de `in_progress` é ignorado (resposta `OK`) quando a mensagem não traz `worker_id`; se traz `worker_id`, o Broker responde `ERROR`. ACK/FAIL de um worker diferente do que recebeu a tarefa também recebe `ERROR`.
+### Recuperação e reentrega
 
-## 4. Estados e tolerância a falhas
+- **ACK válido**: remove a tarefa de `in_progress` e salva o resultado em `done`.
+- **FAIL válido**: nas primeiras entregas, devolve a tarefa ao fim da fila. Ao atingir três entregas sem sucesso, marca `failed`.
+- **Timeout**: a tarefa sem `ACK`/`FAIL` por mais de 30 segundos volta ao início da fila. O monitor verifica expirados a cada 5 segundos.
+- **Desconexão do Worker**: tarefas entregues pela conexão são devolvidas ao início da fila.
+- **Máximo de tentativas**: `MAX_ATTEMPTS = 3`.
+- **ACK/FAIL atrasado**: sem `worker_id`, o ACK/FAIL antigo é ignorado; com `worker_id`, o Broker rejeita a resposta com `ERROR` se o Worker não for o responsável.
+- **Reconexão**: Workers tentam reconectar ao Broker automaticamente após falhas de comunicação.
 
-O Broker mantém os estados `pending`, `in_progress`, `done` e `failed`, além do número de entregas em `attempts`. O timeout de execução é de **30 segundos**; uma tarefa expirada volta ao início da fila. Uma falha reportada por `FAIL` volta ao fim da fila. Após **3 entregas** sem sucesso, a tarefa não é reenfileirada e passa a `failed`.
-
-Se um Worker desconectar com uma tarefa ainda em execução, o Broker a devolve ao início da fila, respeitando o limite de tentativas. Os Workers tentam reconectar automaticamente ao Broker após falhas de comunicação.
-
-O estado é mantido somente em memória pelo processo Broker: ao reiniciar o Broker, fila, resultados e contadores são perdidos. Não há persistência em disco.
-
-## 5. Execução
+## Instalação
 
 ### Pré-requisitos
 
 - Python 3.10 ou superior.
 - Pip.
+- Acesso à porta TCP configurada (5000 por padrão).
 
-### Instalação
+### Windows
+
+```powershell
+git clone https://github.com/liito-0/fila-distribuida.git
+cd fila-distribuida
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+```
+
+### Linux
 
 ```bash
 git clone https://github.com/liito-0/fila-distribuida.git
 cd fila-distribuida
-python -m venv .venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-Ative o ambiente virtual no Windows:
+## Execução
+
+Execute os componentes em terminais separados. Deixe o Broker ativo antes dos Producers e Workers.
+
+### Broker
+
+Windows:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+py -m broker.broker
 ```
 
-Instale as dependências:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Inicialização do Broker
+Linux:
 
 ```bash
 python -m broker.broker
 ```
 
-### Inicialização dos Workers
+O Broker usa `127.0.0.1:5000` por padrão.
 
-Em outros terminais:
+### Worker
 
 ```bash
 python -m worker.worker --id worker-1
 python -m worker.worker --id worker-2
 ```
 
-Os Workers conectam-se ao Broker e reconectam automaticamente se a conexão cair.
+No Windows, substitua `python` por `py` quando necessário. Opções: `--host`, `--port`, `--poll-interval`, `--max-tasks` e `--debug`.
 
-### Envio e consulta com o Producer
-
-Envie um payload simples:
+### Producer
 
 ```bash
 python -m producer.producer --id producer-1 --payload "ola"
-```
-
-Envie três tarefas de texto em intervalos de um segundo:
-
-```bash
 python -m producer.producer --action uppercase --text "ola mundo" --count 3 --interval 1
-```
-
-Some uma lista de inteiros:
-
-```bash
+python -m producer.producer --action reverse --text "worker" --count 2 --wait
 python -m producer.producer --action sum --numbers 1 2 3
 ```
 
-Use `--wait` para aguardar cada tarefa enviada e imprimir seu resultado:
+Opções disponíveis: `--host`, `--port`, `--payload`, `--action`, `--text`, `--numbers`, `--duration`, `--count`, `--interval`, `--wait` e `--debug`.
 
-```bash
-python -m producer.producer --action reverse --text "worker" --count 2 --wait
-```
-
-O Producer também fornece as consultas `status()` e `get_result(task_id)` pela API Python; `wait_result(task_id, timeout=30, poll=0.5)` devolve o resultado concluído e lança `ProducerError` em caso de falha definitiva ou timeout.
+Pela API Python, `submit()`, `submit_many()`, `status()`, `get_result()` e `wait_result()` estão disponíveis em `Producer`. `wait_result(task_id, timeout=30, poll=0.5)` lança `ProducerError` em falha definitiva ou timeout.
 
 ### Demonstração completa
 
-Com a porta padrão do Broker (5000) disponível, execute:
+Com a porta 5000 disponível:
 
 ```bash
 python -m scripts.demo
 ```
 
-O script inicia um Broker e dois Workers como subprocessos usando o Python ativo, envia cinco tarefas de exemplo, imprime os resultados e encerra os processos ao terminar ou ao receber Ctrl+C.
+No Windows, use `py -m scripts.demo` se necessário. O script inicia um Broker e dois Workers, envia cinco tarefas, aguarda os resultados e encerra os subprocessos.
 
-### Testes manuais e automatizados
+## Comandos principais
+
+| Finalidade | Comando |
+|---|---|
+| Criar ambiente virtual, Windows | `py -m venv .venv` |
+| Criar ambiente virtual, Linux | `python3 -m venv .venv` |
+| Instalar dependências | `python -m pip install -r requirements.txt` |
+| Iniciar Broker | `python -m broker.broker` |
+| Iniciar Worker | `python -m worker.worker --id worker-1` |
+| Enviar tarefa | `python -m producer.producer --payload "ola" --wait` |
+| Executar demonstração | `python -m scripts.demo` |
+| Executar teste manual | `python -m scripts.teste_manual` |
+| Executar testes pytest | `python -m pytest tests/ -v` |
+## Testes
+
+Os testes estão escritos com `pytest` e cobrem o Broker, o Producer, o Worker e fluxos de integração. A execução com `py -m pytest tests/ -q` resultou em **42 testes aprovados**.
+
+Para executar a suíte real:
 
 ```bash
-python -m scripts.teste_manual
-python -m pytest tests/ -q
+python -m pytest tests/ -v
 ```
+
+## Limitações conhecidas
+
+- Não há persistência ou replicação do estado do Broker.
+- Reiniciar o Broker apaga fila, tarefas em execução, resultados e contadores.
+- Não há autenticação, criptografia/TLS, autorização ou isolamento por usuário.
+- Não há balanceamento além da distribuição simples por solicitação do Worker.
+- O protocolo não possui controle de versão e não faz checksum das mensagens.
+- Não há confirmação persistente de entrega; ACK/FAIL depende da conexão ativa.
+- `pending` é uma `deque` FIFO, mas timeout traz uma tarefa ao início e FAIL a traz ao fim.
+- O Broker não expõe opção de porta pela CLI; neste código `PORT = 5000` é constante.
+- O limite de tamanho do payload e o dimensionamento da fila não são configurados.
+- Não há supervisão externa dos processos no modo manual.
+- Os dados são mantidos em memória local; não há compartilhamento de estado entre vários processos Broker.
